@@ -9,7 +9,7 @@ import typer
 import yaml
 
 from .agents import EchoAgent, SingleShotOpenAIAgent
-from .models import Budget, Task, ToolSpec
+from .models import Budget, RunTrace, Task, ToolSpec
 from .openai_tools import register_openai_chat_tool
 from .runner import evaluate_task
 from .tools import ToolRegistry
@@ -32,8 +32,74 @@ def _load_task_from_file(path: Path) -> Task:
     )
 
 
+def _print_trace(trace: RunTrace, pretty: bool = False) -> None:
+    if not pretty:
+        typer.echo(json.dumps(trace.model_dump(), indent=2, default=str))
+        return
+
+    try:
+        from rich import box
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:  # pragma: no cover - fallback path
+        typer.echo(json.dumps(trace.model_dump(), indent=2, default=str))
+        return
+
+    console = Console()
+    header = Text(f"Run {trace.run_id}", style="bold") + Text(
+        f" | agent: {trace.agent_name} | steps: {len(trace.steps)}", style="dim"
+    )
+    console.print(header)
+
+    summary = Table(box=box.SIMPLE, show_header=False)
+    summary.add_row("Task", trace.task.goal)
+    summary.add_row("Outcome", trace.outcome.summary if trace.outcome else "N/A")
+    summary.add_row("Status", trace.outcome.status.value if trace.outcome else "unknown")
+    summary.add_row("Total cost", f"{trace.total_cost:.4f}")
+    summary.add_row("Total latency (ms)", str(trace.total_latency_ms))
+    console.print(Panel(summary, title="Summary", expand=False))
+
+    table = Table(title="Steps", box=box.MINIMAL_DOUBLE_HEAD)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Type")
+    table.add_column("Tool")
+    table.add_column("Latency (ms)", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Status")
+    table.add_column("Output", overflow="fold")
+
+    for idx, step in enumerate(trace.steps, start=1):
+        action = step.action
+        obs = step.observation
+        action_type = getattr(action.type, "value", str(action.type))
+        tool_name = action.tool_name or "-"
+        latency = str(obs.latency_ms or 0)
+        cost = f"{(obs.cost or 0):.4f}"
+        status = "error" if obs.error else "ok"
+        output = obs.error or _shorten_output(obs.output)
+        table.add_row(str(idx), action_type, tool_name, latency, cost, status, output)
+
+    console.print(table)
+
+
+def _shorten_output(output: Any, limit: int = 120) -> str:
+    text = ""
+    try:
+        if isinstance(output, (dict, list)):
+            text = json.dumps(output)
+        else:
+            text = str(output)
+    except Exception:  # noqa: BLE001
+        text = "<unprintable output>"
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
 @app.command()
-def demo(goal: str = "Say hello world") -> None:
+def demo(goal: str = "Say hello world", pretty: bool = typer.Option(False, help="Pretty print the trace")) -> None:
     """
     Runs a tiny demo using the built-in EchoAgent and echo tool.
     """
@@ -49,7 +115,7 @@ def demo(goal: str = "Say hello world") -> None:
     )
     agent = EchoAgent(tool_name="echo")
     trace = evaluate_task(task=task, agent=agent, tools=tools)
-    typer.echo(json.dumps(trace.model_dump(), indent=2, default=str))
+    _print_trace(trace, pretty=pretty)
 
 
 @app.command("demo-openai")
@@ -57,6 +123,7 @@ def demo_openai(
     goal: str = "Summarize the benefits of exercise",
     model: str = "gpt-4o-mini",
     base_url: str | None = None,
+    pretty: bool = typer.Option(False, help="Pretty print the trace"),
 ) -> None:
     """
     Runs a one-shot OpenAI chat demo. Requires OPENAI_API_KEY in the environment.
@@ -75,11 +142,11 @@ def demo_openai(
     )
     agent = SingleShotOpenAIAgent(tool_name="openai_chat")
     trace = evaluate_task(task=task, agent=agent, tools=tools)
-    typer.echo(json.dumps(trace.model_dump(), indent=2, default=str))
+    _print_trace(trace, pretty=pretty)
 
 
 @app.command()
-def run_scenario(file: Path) -> None:
+def run_scenario(file: Path, pretty: bool = typer.Option(False, help="Pretty print the trace")) -> None:
     """
     Load a YAML scenario describing a task and run it with EchoAgent.
     Replace EchoAgent with your own implementation to evaluate real agents.
@@ -98,7 +165,7 @@ def run_scenario(file: Path) -> None:
         )
     agent = EchoAgent(tool_name=task.tools[0] if task.tools else "echo")
     trace = evaluate_task(task=task, agent=agent, tools=tools)
-    typer.echo(json.dumps(trace.model_dump(), indent=2, default=str))
+    _print_trace(trace, pretty=pretty)
 
 
 if __name__ == "__main__":

@@ -22,16 +22,16 @@ Requires Python 3.11+ (or 3.12 via Homebrew) and network for OpenAI calls.
 ## CLI commands
 - Mock demo (no network):
   ```bash
-  agent-eval demo --goal "Plan a weekend hike"
+  agent-eval demo --goal "Plan a weekend hike" --pretty
   ```
 - OpenAI demo (requires `OPENAI_API_KEY`):
   ```bash
   export OPENAI_API_KEY=sk-...
-  agent-eval demo-openai --goal "Summarize the agent-eval-harness repo" --model gpt-4o-mini
+  agent-eval demo-openai --goal "Summarize the agent-eval-harness repo" --model gpt-4o-mini --pretty
   ```
 - Run a YAML scenario (uses `EchoAgent` by default):
   ```bash
-  agent-eval run-scenario scenario.yml
+  agent-eval run-scenario scenario.yml --pretty
   ```
 
 Example scenario (`scenario.yml`):
