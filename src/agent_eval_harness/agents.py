@@ -92,6 +92,7 @@ class MultiTurnOpenAIAgent(Agent):
         self._last_answer: str | None = None
         self._task: Task | None = None
         self._pending_tool_call_id: str | None = None
+        self._pending_tool_name: str | None = None
         self._counter = 0
         self.model = model
 
@@ -116,9 +117,12 @@ class MultiTurnOpenAIAgent(Agent):
             {
                 "role": "tool",
                 "tool_call_id": self._pending_tool_call_id or "tool-call",
+                "name": self._pending_tool_name or "",
                 "content": json.dumps(content),
             }
         )
+        self._pending_tool_call_id = None
+        self._pending_tool_name = None
         return self._next_action()
 
     def _next_action(self) -> Optional[Action]:
@@ -126,11 +130,17 @@ class MultiTurnOpenAIAgent(Agent):
             model=self.model,
             messages=self.messages,
             tools=self.tool_definitions,
+            parallel_tool_calls=False,
         )
         message = response.choices[0].message
-        self.messages.append(message.model_dump(exclude_none=True))
+        msg_dict = message.model_dump(exclude_none=True)
 
-        tool_calls = message.tool_calls or []
+        # If multiple tool calls are returned, keep only the first to avoid missing responses.
+        tool_calls = msg_dict.get("tool_calls") or []
+        if tool_calls:
+            msg_dict["tool_calls"] = [tool_calls[0]]
+        self.messages.append(msg_dict)
+
         if tool_calls:
             call = tool_calls[0]
             args = {}
@@ -139,6 +149,7 @@ class MultiTurnOpenAIAgent(Agent):
             except Exception:  # noqa: BLE001
                 args = {}
             self._pending_tool_call_id = call.id
+            self._pending_tool_name = call.function.name
             self._counter += 1
             return Action(
                 id=f"action-{self._counter}",
