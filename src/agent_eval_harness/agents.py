@@ -143,22 +143,34 @@ class MultiTurnOpenAIAgent(Agent):
 
         if tool_calls:
             call = tool_calls[0]
+            # call may be a dict or a Pydantic object; normalize to dict access.
+            fn = call.get("function") if isinstance(call, dict) else getattr(call, "function", None)
+            call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", "")
+            args_raw = ""
+            fn_name = ""
+            if fn:
+                if isinstance(fn, dict):
+                    args_raw = fn.get("arguments") or "{}"
+                    fn_name = fn.get("name") or ""
+                else:
+                    args_raw = getattr(fn, "arguments", "") or "{}"
+                    fn_name = getattr(fn, "name", "") or ""
             args = {}
             try:
-                args = json.loads(call.function.arguments or "{}")
+                args = json.loads(args_raw)
             except Exception:  # noqa: BLE001
                 args = {}
-            self._pending_tool_call_id = call.id
-            self._pending_tool_name = call.function.name
+            self._pending_tool_call_id = call_id or "tool-call"
+            self._pending_tool_name = fn_name or ""
             self._counter += 1
             return Action(
                 id=f"action-{self._counter}",
                 task_id=self._task.id if self._task else "unknown",
                 agent_name=self.name,
                 type="tool",
-                tool_name=call.function.name,
+                tool_name=fn_name,
                 input=args,
-                thought=f"Invoke tool {call.function.name}",
+                thought=f"Invoke tool {fn_name or 'unknown'}",
             )
 
         # No more tool calls; finalize
