@@ -29,6 +29,10 @@ Requires Python 3.11+ (or 3.12 via Homebrew) and network for OpenAI calls.
   export OPENAI_API_KEY=sk-...
   agent-eval demo-openai --goal "Summarize the agent-eval-harness repo" --model gpt-4o-mini --pretty
   ```
+- Multi-turn OpenAI demo with tool calls (requires `OPENAI_API_KEY`):
+  ```bash
+  agent-eval demo-openai-multi --goal "Plan dinner and get a quick recipe idea" --model gpt-4o-mini --pretty
+  ```
 - Run a YAML scenario (uses `EchoAgent` by default):
   ```bash
   agent-eval run-scenario scenario.yml --pretty

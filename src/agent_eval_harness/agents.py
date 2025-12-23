@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import abc
+import json
 from typing import Optional
+
+from openai import OpenAI
 
 from .models import Action, Observation, Task
 
@@ -60,6 +63,99 @@ class EchoAgent(Agent):
 
     def finalize(self, task: Task) -> str:
         return f"Echoed: {task.goal}"
+
+
+class MultiTurnOpenAIAgent(Agent):
+    """
+    Multi-step agent that uses OpenAI function calling to decide tool invocations.
+    """
+
+    name = "openai-multi"
+
+    def __init__(
+        self,
+        tools_registry,
+        tool_names,
+        model: str = "gpt-4o-mini",
+        system_prompt: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        from .openai_tools import build_openai_tools_from_registry
+
+        self.tool_names = tool_names
+        self.tools_registry = tools_registry
+        self.tool_definitions = build_openai_tools_from_registry(tools_registry, tool_names)
+        self.system_prompt = system_prompt or "You are an agent that plans and calls tools to solve the task."
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.messages: list[dict] = []
+        self._last_answer: str | None = None
+        self._task: Task | None = None
+        self._pending_tool_call_id: str | None = None
+        self._counter = 0
+        self.model = model
+
+    def begin_task(self, task: Task) -> Action | None:
+        self._task = task
+        self.messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": task.goal},
+        ]
+        if task.context:
+            self.messages.append({"role": "user", "content": f"Context: {json.dumps(task.context)}"})
+        if task.constraints:
+            self.messages.append({"role": "user", "content": f"Constraints: {task.constraints}"})
+        return self._next_action()
+
+    def handle_observation(self, observation: Observation) -> Optional[Action]:
+        # Attach tool result and ask the model what to do next
+        content = observation.output
+        if observation.error:
+            content = {"error": observation.error, "output": observation.output}
+        self.messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": self._pending_tool_call_id or "tool-call",
+                "content": json.dumps(content),
+            }
+        )
+        return self._next_action()
+
+    def _next_action(self) -> Optional[Action]:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=self.messages,
+            tools=self.tool_definitions,
+        )
+        message = response.choices[0].message
+        self.messages.append(message.model_dump(exclude_none=True))
+
+        tool_calls = message.tool_calls or []
+        if tool_calls:
+            call = tool_calls[0]
+            args = {}
+            try:
+                args = json.loads(call.function.arguments or "{}")
+            except Exception:  # noqa: BLE001
+                args = {}
+            self._pending_tool_call_id = call.id
+            self._counter += 1
+            return Action(
+                id=f"action-{self._counter}",
+                task_id=self._task.id if self._task else "unknown",
+                agent_name=self.name,
+                type="tool",
+                tool_name=call.function.name,
+                input=args,
+                thought=f"Invoke tool {call.function.name}",
+            )
+
+        # No more tool calls; finalize
+        self._last_answer = message.content or "No response."
+        return None
+
+    def finalize(self, task: Task) -> str:
+        return self._last_answer or "No response."
 
 
 class SingleShotOpenAIAgent(Agent):

@@ -8,7 +8,7 @@ from typing import Any, Dict
 import typer
 import yaml
 
-from .agents import EchoAgent, SingleShotOpenAIAgent
+from .agents import EchoAgent, MultiTurnOpenAIAgent, SingleShotOpenAIAgent
 from .models import Budget, RunTrace, Task, ToolSpec
 from .openai_tools import register_openai_chat_tool
 from .runner import evaluate_task
@@ -142,6 +142,63 @@ def demo_openai(
     )
     agent = SingleShotOpenAIAgent(tool_name="openai_chat")
     trace = evaluate_task(task=task, agent=agent, tools=tools)
+    _print_trace(trace, pretty=pretty)
+
+
+@app.command("demo-openai-multi")
+def demo_openai_multi(
+    goal: str = "Plan dinner and get a quick recipe idea",
+    model: str = "gpt-4o-mini",
+    base_url: str | None = None,
+    pretty: bool = typer.Option(False, help="Pretty print the trace"),
+) -> None:
+    """
+    Runs a multi-turn OpenAI demo with function calling over mocked tools.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise typer.BadParameter("OPENAI_API_KEY is not set.")
+
+    tools = ToolRegistry()
+
+    # Mock tools for the demo
+    tools.register(
+        ToolSpec(
+            name="get_ingredients",
+            description="Return ingredients for a simple dish.",
+            input_schema={
+                "type": "object",
+                "properties": {"dish": {"type": "string"}},
+                "required": ["dish"],
+            },
+            mock=True,
+        ),
+        handler=lambda payload: {"dish": payload["dish"], "ingredients": ["pasta", "tomato", "garlic"]},
+    )
+    tools.register(
+        ToolSpec(
+            name="get_steps",
+            description="Return short cooking steps.",
+            input_schema={
+                "type": "object",
+                "properties": {"dish": {"type": "string"}},
+                "required": ["dish"],
+            },
+            mock=True,
+        ),
+        handler=lambda payload: {"dish": payload["dish"], "steps": ["Boil pasta", "Make sauce", "Combine"]},
+    )
+
+    task = Task(id="openai-multi-demo", goal=goal, tools=["get_ingredients", "get_steps"])
+    agent = MultiTurnOpenAIAgent(
+        tools_registry=tools,
+        tool_names=task.tools,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        system_prompt="You are a planning assistant. Decide which tools to call to plan a quick meal.",
+    )
+    trace = evaluate_task(task=task, agent=agent, tools=tools, max_steps=5)
     _print_trace(trace, pretty=pretty)
 
 

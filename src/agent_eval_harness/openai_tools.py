@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -53,3 +54,25 @@ def register_openai_chat_tool(
         handler=handler,
     )
     return tool_name
+
+
+def build_openai_tools_from_registry(
+    registry: ToolRegistry, tool_names: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Convert registry ToolSpecs into OpenAI tool definitions.
+    """
+    defs: List[Dict[str, Any]] = []
+    for name in tool_names:
+        spec = registry.get(name)
+        defs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.input_schema or {"type": "object"},
+                },
+            }
+        )
+    return defs
