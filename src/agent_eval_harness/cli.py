@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict
 
 import typer
@@ -96,6 +97,25 @@ def _shorten_output(output: Any, limit: int = 120) -> str:
     if len(text) > limit:
         return text[: limit - 3] + "..."
     return text
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _load_pantry() -> list[dict[str, Any]]:
+    pantry_path = _repo_root() / "data" / "pantry.json"
+    if not pantry_path.exists():
+        return []
+    try:
+        return json.loads(pantry_path.read_text())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _safe_slug(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+    return slug or "recipe"
 
 
 @app.command()
@@ -199,6 +219,167 @@ def demo_openai_multi(
         system_prompt="You are a planning assistant. Decide which tools to call to plan a quick meal.",
     )
     trace = evaluate_task(task=task, agent=agent, tools=tools, max_steps=5)
+    _print_trace(trace, pretty=pretty)
+
+
+@app.command("demo-openai-recipe")
+def demo_openai_recipe(
+    goal: str = (
+        "Plan a 20-minute vegetarian pasta dinner. "
+        "Call tools to check pantry, build a shopping list, draft steps, make a timer plan, "
+        "and save notes."
+    ),
+    model: str = "gpt-4o-mini",
+    base_url: str | None = None,
+    pretty: bool = typer.Option(False, help="Pretty print the trace"),
+) -> None:
+    """
+    Multi-turn recipe planner using real (non-mock) tools plus OpenAI.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise typer.BadParameter("OPENAI_API_KEY is not set.")
+
+    pantry = _load_pantry()
+    tools = ToolRegistry()
+
+    def pantry_lookup(payload: Dict[str, Any]) -> Dict[str, Any]:
+        dish = payload.get("dish", "")
+        matches = pantry
+        return {"dish": dish, "available": matches}
+
+    def shopping_list(payload: Dict[str, Any]) -> Dict[str, Any]:
+        needed = payload.get("ingredients", []) or []
+        have = {item.get("name", "").lower(): item for item in pantry}
+        missing = [item for item in needed if item.lower() not in have]
+        return {"missing": missing, "have": list(have.keys())}
+
+    def recipe_steps(payload: Dict[str, Any]) -> Dict[str, Any]:
+        dish = payload.get("dish") or "dish"
+        dietary = payload.get("dietary_notes", "")
+        prompt = (
+            f"Create concise numbered cooking steps (<=8 steps, <=120 words) for {dish}."
+            f" Dietary notes: {dietary or 'none'}."
+        )
+        from openai import OpenAI
+
+        openai_client = OpenAI(api_key=api_key, base_url=base_url)
+        resp = openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": "You are a concise recipe writer."}, {"role": "user", "content": prompt}],
+        )
+        content = resp.choices[0].message.content or ""
+        steps = [line.strip(" -") for line in content.split("\n") if line.strip()]
+        return {"steps": steps, "raw": content}
+
+    def timer_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
+        steps = payload.get("steps") or []
+        schedule = []
+        current = 0
+        for idx, step in enumerate(steps, start=1):
+            duration = 3 if idx % 2 == 0 else 4
+            schedule.append(
+                {"step": step, "start_min": current, "end_min": current + duration, "duration_min": duration}
+            )
+            current += duration
+        return {"schedule": schedule, "total_minutes": current}
+
+    def note_run(payload: Dict[str, Any]) -> Dict[str, Any]:
+        dish = payload.get("dish") or "dish"
+        notes = payload.get("notes") or ""
+        notes_dir = _repo_root() / "recipes_log"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        path = notes_dir / f"{_safe_slug(dish)}.md"
+        path.write_text(notes)
+        return {"saved_to": str(path)}
+
+    tools.register(
+        ToolSpec(
+            name="pantry_lookup",
+            description="Check pantry items available for the dish.",
+            input_schema={
+                "type": "object",
+                "properties": {"dish": {"type": "string"}},
+                "required": ["dish"],
+            },
+            mock=False,
+        ),
+        handler=pantry_lookup,
+    )
+    tools.register(
+        ToolSpec(
+            name="shopping_list",
+            description="Compare needed ingredients to pantry and return missing items.",
+            input_schema={
+                "type": "object",
+                "properties": {"ingredients": {"type": "array", "items": {"type": "string"}}},
+                "required": ["ingredients"],
+            },
+            mock=False,
+        ),
+        handler=shopping_list,
+    )
+    tools.register(
+        ToolSpec(
+            name="recipe_steps",
+            description="Draft concise cooking steps using OpenAI.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "dish": {"type": "string"},
+                    "dietary_notes": {"type": "string"},
+                },
+                "required": ["dish"],
+            },
+            mock=False,
+        ),
+        handler=recipe_steps,
+    )
+    tools.register(
+        ToolSpec(
+            name="timer_plan",
+            description="Turn steps into a simple timed schedule.",
+            input_schema={
+                "type": "object",
+                "properties": {"steps": {"type": "array", "items": {"type": "string"}}},
+                "required": ["steps"],
+            },
+            mock=False,
+        ),
+        handler=timer_plan,
+    )
+    tools.register(
+        ToolSpec(
+            name="note_run",
+            description="Persist notes for the dish to a local log file.",
+            input_schema={
+                "type": "object",
+                "properties": {"dish": {"type": "string"}, "notes": {"type": "string"}},
+                "required": ["dish", "notes"],
+            },
+            mock=False,
+        ),
+        handler=note_run,
+    )
+
+    task = Task(
+        id="openai-recipe-demo",
+        goal=goal,
+        tools=["pantry_lookup", "shopping_list", "recipe_steps", "timer_plan", "note_run"],
+    )
+    agent = MultiTurnOpenAIAgent(
+        tools_registry=tools,
+        tool_names=task.tools,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        system_prompt=(
+            "You are a cooking planner. Use tools in a sensible order: pantry_lookup, shopping_list, "
+            "recipe_steps, timer_plan, note_run. Call tools individually, multiple steps if needed. "
+            "Only give the final answer after note_run."
+        ),
+    )
+    trace = evaluate_task(task=task, agent=agent, tools=tools, max_steps=10)
     _print_trace(trace, pretty=pretty)
 
 
