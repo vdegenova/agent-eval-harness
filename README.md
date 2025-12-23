@@ -4,9 +4,10 @@ Prototype framework for evaluating agentic workflows (tasks, plans, actions, out
 
 ## What’s included
 - Typed data model (`Task`, `PlanStep`, `Action`, `Observation`, `Outcome`, `RunTrace`, `ToolSpec`, `Budget`).
-- Agent interface with two reference agents:
+- Agent interface with reference agents:
   - `EchoAgent` (mock echo tool) for wiring/tests.
-  - `SingleShotOpenAIAgent` (OpenAI Chat API) for real completions.
+  - `SingleShotOpenAIAgent` (OpenAI Chat API) for single-shot tasks.
+  - `MultiTurnOpenAIAgent` (OpenAI function calling) for multi-step tool use.
 - Tool registry with mock support and an OpenAI chat tool helper.
 - Runner that records traces and basic metrics (steps, cost, latency).
 - Typer CLI (`agent-eval`) with demo commands and YAML-driven scenarios.
@@ -58,10 +59,24 @@ budget:
 
 ## How it works (end-to-end)
 1) CLI builds a `Task` (goal/context/tools/budget).
-2) Tools are registered in a `ToolRegistry` (`echo` mock or `openai_chat` real API).
-3) Agent produces the first `Action` (`EchoAgent` → echo; `SingleShotOpenAIAgent` → OpenAI chat).
-4) Runner invokes the tool, records `Action` + `Observation` in `RunTrace`, and stops (single step today).
-5) Outcome is marked success with metrics and the agent’s final message. The CLI prints the JSON trace.
+2) Tools are registered in a `ToolRegistry` (mock echo, real OpenAI chat, or your handlers).
+3) Agent produces the first `Action` (`EchoAgent` → echo; `SingleShotOpenAIAgent` → OpenAI chat; `MultiTurnOpenAIAgent` → OpenAI with function calling).
+4) Runner invokes the tool, records `Action` + `Observation` in `RunTrace`, and loops until the agent stops or `max_steps` is hit.
+5) Outcome is marked success with metrics and the agent’s final message. The CLI prints a JSON trace (or a pretty table with `--pretty`).
+
+## Multi-turn recipe demo (real tools)
+- Tools:
+  - `pantry_lookup`: reads `data/pantry.json` to list available ingredients.
+  - `shopping_list`: compares needed ingredients to pantry, returns missing items.
+  - `recipe_steps`: calls OpenAI to draft concise steps for a dish.
+  - `timer_plan`: turns steps into a timed schedule.
+  - `note_run`: saves notes to `recipes_log/<dish>.md`.
+- Agent: `MultiTurnOpenAIAgent` with OpenAI function calling; instructed to call tools in sensible order and only finalize after `note_run`.
+- Run:
+  ```bash
+  agent-eval demo-openai-recipe --goal "Plan a 20-minute vegetarian pasta dinner with a shopping list and timer plan" --model gpt-4o-mini --pretty
+  ```
+- Outputs: rich CLI table plus a saved note file for the dish.
 
 ## Extending
 - Add tools: register a `ToolSpec` + handler via `ToolRegistry.register`.
