@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-eval-harness"
+version = "0.0.1"
+description = "A framework for evaluating agentic workflows, not single prompts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Agent Harness", email = "dev@example.com" }]
+dependencies = [
+    "click>=8.1,<8.2",
+    "openai>=1.51,<2",
+    "pydantic>=2.6,<3",
+    "typer>=0.12,<0.13",
+    "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<8",
+    "ruff>=0.4,<0.5",
+]
+
+[project.scripts]
+agent-eval = "agent_eval_harness.cli:app"
+
+[tool.hatch]
+sources = ["src"]
